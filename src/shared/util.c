@@ -4605,8 +4605,8 @@ int container_get_leader(const char *machine, pid_t *pid) {
         return 0;
 }
 
-int namespace_open(pid_t pid, int *pidns_fd, int *mntns_fd, int *netns_fd, int *root_fd) {
-        _cleanup_close_ int pidnsfd = -1, mntnsfd = -1, netnsfd = -1;
+int namespace_open(pid_t pid, int *pidns_fd, int *mntns_fd, int *netns_fd, int *userns_fd, int *root_fd) {
+        _cleanup_close_ int pidnsfd = -1, mntnsfd = -1, netnsfd = -1, usernsfd = -1;
         int rfd = -1;
 
         assert(pid >= 0);
@@ -4638,6 +4638,15 @@ int namespace_open(pid_t pid, int *pidns_fd, int *mntns_fd, int *netns_fd, int *
                         return -errno;
         }
 
+        if (userns_fd) {
+                const char *userns;
+
+                userns = procfs_file_alloca(pid, "ns/user");
+                usernsfd = open(userns, O_RDONLY|O_NOCTTY|O_CLOEXEC);
+                if (usernsfd < 0)
+                        return -errno;
+        }
+
         if (root_fd) {
                 const char *root;
 
@@ -4656,15 +4665,18 @@ int namespace_open(pid_t pid, int *pidns_fd, int *mntns_fd, int *netns_fd, int *
         if (netns_fd)
                 *netns_fd = netnsfd;
 
+        if (userns_fd)
+                *userns_fd = usernsfd;
+
         if (root_fd)
                 *root_fd = rfd;
 
-        pidnsfd = mntnsfd = netnsfd = -1;
+        pidnsfd = mntnsfd = netnsfd = usernsfd = -1;
 
         return 0;
 }
 
-int namespace_enter(int pidns_fd, int mntns_fd, int netns_fd, int root_fd) {
+int namespace_enter(int pidns_fd, int mntns_fd, int netns_fd, int userns_fd, int root_fd) {
 
         if (pidns_fd >= 0)
                 if (setns(pidns_fd, CLONE_NEWPID) < 0)
@@ -4676,6 +4688,10 @@ int namespace_enter(int pidns_fd, int mntns_fd, int netns_fd, int root_fd) {
 
         if (netns_fd >= 0)
                 if (setns(netns_fd, CLONE_NEWNET) < 0)
+                        return -errno;
+
+        if (userns_fd >= 0)
+                if (setns(userns_fd, CLONE_NEWUSER) < 0)
                         return -errno;
 
         if (root_fd >= 0) {
@@ -5657,7 +5673,7 @@ int ptsname_malloc(int fd, char **ret) {
 }
 
 int openpt_in_namespace(pid_t pid, int flags) {
-        _cleanup_close_ int pidnsfd = -1, mntnsfd = -1, rootfd = -1;
+        _cleanup_close_ int pidnsfd = -1, mntnsfd = -1, usernsfd = -1, rootfd = -1;
         _cleanup_close_pair_ int pair[2] = { -1, -1 };
         union {
                 struct cmsghdr cmsghdr;
@@ -5674,7 +5690,7 @@ int openpt_in_namespace(pid_t pid, int flags) {
 
         assert(pid > 0);
 
-        r = namespace_open(pid, &pidnsfd, &mntnsfd, NULL, &rootfd);
+        r = namespace_open(pid, &pidnsfd, &mntnsfd, NULL, &usernsfd, &rootfd);
         if (r < 0)
                 return r;
 
@@ -5690,7 +5706,7 @@ int openpt_in_namespace(pid_t pid, int flags) {
 
                 pair[0] = safe_close(pair[0]);
 
-                r = namespace_enter(pidnsfd, mntnsfd, -1, rootfd);
+                r = namespace_enter(pidnsfd, mntnsfd, -1, usernsfd, rootfd);
                 if (r < 0)
                         _exit(EXIT_FAILURE);
 
